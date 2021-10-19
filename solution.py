@@ -82,10 +82,11 @@ def run_adam(model, iterations, train_dataset, minibatch_size = 100):
     return logf
 
 def select_inducing_variables(n, X):
-    mask = X[:,0] > 1
-    X_left = X[~mask]
-    random_indices = np.random.choice(X_left.shape[0], size=n)
-    return np.concatenate([X[mask], X_left[random_indices]], axis=0)
+    #mask = X[:,0] > 1
+    #X_left = X[~mask]
+    #random_indices = np.random.choice(X_left.shape[0], size=n)
+    return X[:n].copy()
+    #np.concatenate([X[mask], X_left[random_indices]], axis=0)
 
 
 kernels = {
@@ -137,10 +138,11 @@ class Model(object):
         gp_std = np.zeros(x.shape[0], dtype=float)
 
         # TODO: Use the GP posterior to form your predictions here
-        predictions = self.model.predict_y(x)
-        mean, var = self.model.predict_f(x)
+        mean, var = self.model.predict_y(x)
+        #mean, var = self.model.predict_f(x)
+        predictions = mean - 0.05 * var
 
-        return tf.reshape(predictions[:][0], [-1]), tf.reshape(predictions[:][1], [-1]), tf.reshape(var, [-1])
+        return tf.reshape(predictions, [-1]), tf.reshape(mean, [-1]), tf.reshape(var, [-1])
 
 
     def fit_model(self, train_x: np.ndarray, train_y: np.ndarray):
@@ -202,7 +204,7 @@ def cost_function(y_true: np.ndarray, y_predicted: np.ndarray) -> float:
 class Parameters():
     k = "poly"
     inducing_variables = 50
-    adam_iterations = 5000
+    adam_iterations = 20000
     minibatch_size = 100
     predict_func = lambda _, mean, var: mean
 
