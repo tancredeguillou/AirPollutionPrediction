@@ -1,173 +1,23 @@
-import time
-
 import matplotlib as plt
 import os
-import typing
-
-from sklearn.gaussian_process.kernels import *
-import numpy as np
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.model_selection import cross_val_score
-from sklearn.model_selection import KFold
-import matplotlib.pyplot as plt
 from matplotlib import cm
 
-import sys
-
 import numpy as np
-import matplotlib.pyplot as plt
-import tensorflow as tf
-
-import gpflow
-from gpflow.ci_utils import ci_niter
-
-gpflow.config.set_default_float(np.float64)
-gpflow.config.set_default_jitter(1e-4)
-gpflow.config.set_default_summary_fmt("notebook")
-# convert to float64 for tfp to play nicely with gpflow in 64
-f64 = gpflow.utilities.to_default_float
-
-
+from scipy.stats import norm
+import torch
+from torch.utils.data import DataLoader
+import gpytorch
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
 EXTENDED_EVALUATION = False
 EVALUATION_GRID_POINTS = 300  # Number of grid points used in extended evaluation
 EVALUATION_GRID_POINTS_3D = 50  # Number of points displayed in 3D during evaluation
 
-
-# Cost function constants
+## Constant for Cost function
 THRESHOLD = 35.5
 COST_W_NORMAL = 1.0
 COST_W_OVERPREDICT = 5.0
 COST_W_THRESHOLD = 20.0
-
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
-
-def timeit(function):
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        retval = function(*args, **kwargs)
-        stop = time.time()
-
-        eprint(f"{function.__name__}(...) took {stop - start:.1f} seconds.")
-        return retval
-
-    return wrapper
-
-def run_adam(model, iterations, train_dataset, minibatch_size = 100):
-    """
-    Utility function running the Adam optimizer
-
-    :param model: GPflow model
-    :param interations: number of iterations
-    """
-    # Create an Adam Optimizer action
-    logf = []
-    train_iter = iter(train_dataset.batch(minibatch_size))
-    training_loss = model.training_loss_closure(train_iter, compile=True)
-    optimizer = tf.optimizers.Adam()
-
-    @tf.function
-    def optimization_step():
-        optimizer.minimize(training_loss, model.trainable_variables)
-
-    for step in range(iterations):
-        optimization_step()
-        if step % 100 == 0:
-            elbo = -training_loss().numpy()
-            pad = len(str(iterations)) - 1
-            eprint(f"Adam : step {step:>{pad}} of {iterations}, Elbo: {elbo}")
-            logf.append(elbo)
-    return logf
-
-def select_inducing_variables(n, X):
-    #mask = X[:,0] > 1
-    #X_left = X[~mask]
-    #random_indices = np.random.choice(X_left.shape[0], size=n)
-    return X[:n].copy()
-    #np.concatenate([X[mask], X_left[random_indices]], axis=0)
-
-
-kernels = {
-    "exp"       : gpflow.kernels.Exponential,
-    "matern12"  : gpflow.kernels.Matern12,
-    "matern32"  : gpflow.kernels.Matern32,
-    "matern52"  : gpflow.kernels.Matern52,
-    "rbf"       : gpflow.kernels.SquaredExponential,
-    "quadratic" : gpflow.kernels.RationalQuadratic,
-    "cosine"    : gpflow.kernels.Cosine,
-    "periodic"  : gpflow.kernels.Periodic,
-    "poly"      : gpflow.kernels.Polynomial,
-    "arccosine" : gpflow.kernels.ArcCosine,
-    "coregion"  : gpflow.kernels.Coregion
-}
-
-class Model(object):
-    """
-    Model for this task.
-    You need to implement the fit_model and predict methods
-    without changing their signatures, but are allowed to create additional methods.
-    """
-
-    def __init__(self):
-        """
-        Initialize your model here.
-        We already provide a random number generator for reproducibility.
-        """
-        params = Parameters()
-        self.kernel = kernels[params.k]
-        self.inducing_variables = params.inducing_variables
-        self.adam_iterations = params.adam_iterations
-        self.minibatch_size = params.minibatch_size
-        self.predict_func = params.predict_func
-        self.model = None
-
-
-    def predict(self, x: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Predict the pollution concentration for a given set of locations.
-        :param x: Locations as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :return:
-            Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,),
-            containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
-        """
-
-        # TODO: Use your GP to estimate the posterior mean and stddev for each location here
-        gp_mean = np.zeros(x.shape[0], dtype=float)
-        gp_std = np.zeros(x.shape[0], dtype=float)
-
-        # TODO: Use the GP posterior to form your predictions here
-        mean, var = self.model.predict_y(x)
-        #mean, var = self.model.predict_f(x)
-        predictions = mean - 0.05 * var
-
-        return tf.reshape(predictions, [-1]), tf.reshape(mean, [-1]), tf.reshape(var, [-1])
-
-
-    def fit_model(self, train_x: np.ndarray, train_y: np.ndarray):
-        """
-        Fit your model on the given training data.
-        :param train_x: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
-        :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
-        """
-
-        train_y = np.expand_dims(train_y, axis=1) # check si necessaire
-        train_dataset = tf.data.Dataset.from_tensor_slices((train_x, train_y)).repeat().shuffle(train_x.shape[0])
-
-        k1 = gpflow.kernels.RationalQuadratic()
-        k2 = gpflow.kernels.RBF()
-        k = k1 + k2
-
-        self.model = gpflow.models.SVGP(
-            k,
-            gpflow.likelihoods.Gaussian(),
-            inducing_variable = select_inducing_variables(n=self.inducing_variables, X=train_x),
-            num_data = train_x.shape[0]
-        )
-
-        gpflow.set_trainable(self.model.inducing_variable, False)
-        _ = run_adam(self.model, ci_niter(self.adam_iterations), train_dataset, self.minibatch_size)
 
 
 def cost_function(y_true: np.ndarray, y_predicted: np.ndarray) -> float:
@@ -201,12 +51,135 @@ def cost_function(y_true: np.ndarray, y_predicted: np.ndarray) -> float:
     # Weigh the cost and return the average
     return np.mean(cost * weights)
 
-class Parameters():
-    k = "poly"
-    inducing_variables = 50
-    adam_iterations = 20000
-    minibatch_size = 100
-    predict_func = lambda _, mean, var: mean
+"""
+Fill in the methods of the Model. Please do not change the given methods for the checker script to work.
+You can add new methods, and make changes. The checker script performs:
+    M = Model()
+    M.fit_model(train_x,train_y)
+    prediction = M.predict(test_x)
+It uses predictions to compare to the ground truth using the cost_function above.
+"""
+
+# In order to complete this task we followed the GPyTorch Regression tutorial that can
+# be found here : [https://docs.gpytorch.ai/en/v1.2.0/examples/01_Exact_GPs/Simple_GP_Regression.html]
+# We copyed partially or in integrality some part of these tutorial/
+
+
+class Model():
+
+    def __init__(self):
+        """
+            TODO: enter your code here
+        """
+        # Initialize de likelihood (not the model yet as we need training set to do it)
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        self.model = None
+
+    def predict(self, test_x):
+        """
+            TODO: enter your code here
+        """
+
+        # Create a tensor of the test set
+        test_x = torch.Tensor(test_x)
+
+        # Turn the model into evaluation mode
+        self.model.eval()
+        self.likelihood.eval()
+
+        # Get the prediction (in form of MutlvariateNormal)
+        #f_preds = self.model(test_x)
+        y_obs = self.likelihood(self.model(test_x))
+        # For each observation we take the mean of this one as the prediction
+        y_means = y_obs.mean.detach().numpy()
+        y_preds = y_means
+
+        ### Trick to avoid too much penality from the loss function of the assignment ###
+        ### You can find more details on why and how we did this trick on the project description
+
+        # For each observation we also get the variance of the distribution
+        variance_obs = y_obs.variance.detach().numpy()
+        # Then we can define normal continuous random variable with mean(=loc)
+        # and var(=scale) from the predicted distribution
+        #norm_ditribution = norm(y_preds, variance_obs)
+        # evaluated CDF at THRESHOLD for each predicted distributions
+        #cdf_half = norm_ditribution.cdf([THRESHOLD] * nbr)
+        # find the best confidence value using a for loop with value 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9
+        #confidence = 0.7
+        #epsilon = 0.000000001
+
+        # Update prediction in order to be less penalized by the loss function
+        #decision = np.zeros_like(y_preds)
+        #for pollution under threshold with low confidence : don't underpredict
+        #mask_1 = 
+        #y_preds[(y_preds > THRESHOLD) & (cdf_half < confidence)] = THRESHOLD - epsilon
+
+        #############################################################################
+
+        return y_preds, y_means, variance_obs
+
+
+    def fit_model(self, train_x, train_y):
+        """
+             TODO: enter your code here
+        """
+        # Construct tensors with training data (and keep a copy of y_train for the loss function test)
+        # copy_train_y = train_y
+        train_x = torch.Tensor(train_x[:8000])
+        train_y = torch.Tensor(train_y[:8000])
+
+        # Initialize the model with our training set and likelihood
+        self.model = ExactGPModel(train_x, train_y, self.likelihood)
+
+        # Train both the likelihood and the model in order to find optimal model hyperparameters
+        self.model.train()
+        self.likelihood.train()
+
+        # Use the Adam optimizer
+        # We tried the SGD, but results were not good enough compare to the Adam optimizer
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.05)
+        # "Loss" for GPs - the marginal log likelihood
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
+
+        for i in range(50):
+            # Zero gradients from previous iteration
+            optimizer.zero_grad()
+            # Output from model
+            output = self.model(train_x)
+            # Compute loss and backpropagation gradients
+            loss = -mll(output, train_y)
+
+            ######################################
+
+            # Here we should try to use the given loss function to train our model
+            # It would probably allow us to not manually modify the predications at the end
+            #output_np = output.mean.detach().numpy()
+            #loss = cost_function_torch(train_y, output.mean)
+            #print(loss)
+
+            ######################################
+
+            loss.backward()
+            print('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
+                i + 1, 50, loss.item(),
+                self.model.covar_module.base_kernel.lengthscale.item(),
+                self.model.likelihood.noise.item()
+            ))
+            optimizer.step()
+
+
+# Simplest form of Gaussian Model, Inference (cf. Tutorial)
+class ExactGPModel(gpytorch.models.ExactGP):
+
+    def __init__(self, train_x, train_y, likelihood):
+        super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+        self.mean_module = gpytorch.means.ConstantMean()
+        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RQKernel())
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     """
@@ -282,11 +255,10 @@ def main():
 
     # Predict on the test features
     print('Predicting on test features')
-    predicted_y = model.predict(test_x)
-    print('prediction ', predicted_y[:][0])
-    print('mean ', predicted_y[:][1])
-    print('variance ', predicted_y[1])
-
+    predicted_y, mean, var = model.predict(test_x)
+    print('prediction ', predicted_y)
+    print('mean ', mean)
+    print('variance ', var)
 
     if EXTENDED_EVALUATION:
         perform_extended_evaluation(model, output_dir='.')
