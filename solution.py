@@ -125,8 +125,12 @@ class Model():
         """
         # Construct tensors with training data (and keep a copy of y_train for the loss function test)
         # copy_train_y = train_y
-        train_x = torch.Tensor(train_x[:8000])
-        train_y = torch.Tensor(train_y[:8000])
+        data = np.column_stack((train_x,train_y))
+        new_data = data[(data[:,0]>0) & (data[:,2]>0) & (data[:,2]>0)]
+        train_x = new_data[:,:2]
+        train_y = new_data[:,2]
+        train_x = torch.Tensor(train_x[:12000])
+        train_y = torch.Tensor(train_y[:12000])
 
         # Initialize the model with our training set and likelihood
         self.model = ExactGPModel(train_x, train_y, self.likelihood)
@@ -141,7 +145,7 @@ class Model():
         # "Loss" for GPs - the marginal log likelihood
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
 
-        for i in range(50):
+        for i in range(100):
             # Zero gradients from previous iteration
             optimizer.zero_grad()
             # Output from model
@@ -160,10 +164,11 @@ class Model():
             ######################################
 
             loss.backward()
-            print('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
-                i + 1, 50, loss.item(),
-                self.model.covar_module.base_kernel.lengthscale.item(),
-                self.model.likelihood.noise.item()
+            print('Iter %d/%d - Loss: %.3f  ' % (
+                  #' lengthscale: %.3f   noise: %.3f' % (
+                i + 1, 100, loss.item(),
+                #self.model.covar_module.base_kernel.lengthscale.item(),
+                #self.model.likelihood.noise.item()
             ))
             optimizer.step()
 
@@ -174,12 +179,38 @@ class ExactGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
         self.mean_module = gpytorch.means.ConstantMean()
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RQKernel())
+        self.covar_module = get_kernel("Matern-1/2")
 
     def forward(self, x):
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+def get_kernel(kernel, composition="addition"):
+    base_kernel = []
+    if "RBF" in kernel:
+        base_kernel.append(gpytorch.kernels.RBFKernel())
+    if "linear" in kernel:
+        base_kernel.append(gpytorch.kernels.LinearKernel())
+    if "quadratic" in kernel:
+        base_kernel.append(gpytorch.kernels.PolynomialKernel(power=2))
+    if "Matern-1/2" in kernel:
+        base_kernel.append(gpytorch.kernels.MaternKernel(nu=1/2))
+    if "Matern-3/2" in kernel:
+        base_kernel.append(gpytorch.kernels.MaternKernel(nu=3/2))
+    if "Matern-5/2" in kernel:
+        base_kernel.append(gpytorch.kernels.MaternKernel(nu=5/2))
+    if "Cosine" in kernel:
+        base_kernel.append(gpytorch.kernels.CosineKernel())
+
+    if composition == "addition":
+        base_kernel = gpytorch.kernels.AdditiveKernel(*base_kernel)
+    elif composition == "product":
+        base_kernel = gpytorch.kernels.ProductKernel(*base_kernel)
+    else:
+        raise NotImplementedError
+    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
+    return kernel
 
 def perform_extended_evaluation(model: Model, output_dir: str = '/results'):
     """
