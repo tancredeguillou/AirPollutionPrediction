@@ -1,11 +1,11 @@
 import matplotlib as plt
 import os
+
+import typing
 from matplotlib import cm
 
 import numpy as np
-from scipy.stats import norm
 import torch
-from torch.utils.data import DataLoader
 import gpytorch
 
 # Set `EXTENDED_EVALUATION` to `True` in order to visualize your predictions.
@@ -19,6 +19,120 @@ COST_W_NORMAL = 1.0
 COST_W_OVERPREDICT = 5.0
 COST_W_THRESHOLD = 20.0
 
+"""
+Fill in the methods of the Model. Please do not change the given methods for the checker script to work.
+You can add new methods, and make changes. The checker script performs:
+    M = Model()
+    M.fit_model(train_x,train_y)
+    prediction = M.predict(test_x)
+It uses predictions to compare to the ground truth using the cost_function above.
+"""
+
+# In order to complete this task we have followed the GPyTorch Regression tutorial that can
+# be found here : https://docs.gpytorch.ai/en/v1.1.1/examples/01_Exact_GPs/Simple_GP_Regression.html
+# We have copied partially or in integrality some part of these tutorial/
+
+
+class Model():
+    """
+    Model for this task.
+    You need to implement the fit_model and predict methods
+    without changing their signatures, but are allowed to create additional methods.
+    """
+
+    def __init__(self):
+        """
+        Initialize your model here.
+        We already provide a random number generator for reproducibility.
+        """
+        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
+        self.model = None
+
+    def predict(self, x: np.ndarray) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Predict the pollution concentration for a given set of locations.
+        :param x: Locations as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
+        :return:
+            Tuple of three 1d NumPy float arrays, each of shape (NUM_SAMPLES,),
+            containing your predictions, the GP posterior mean, and the GP posterior stddev (in that order)
+        """
+        # Create a tensor of the test set
+        test_x = torch.Tensor(x)
+
+        # Turn the model into evaluation mode
+        self.model.eval()
+        self.likelihood.eval()
+
+        # Get the prediction (in form of MutlvariateNormal)
+        y_obs = self.likelihood(self.model(test_x))
+        # For each observation we take the mean of this one as the prediction
+        y_means = y_obs.mean.detach().numpy()
+        y_preds = y_means
+
+        # For each observation we also get the variance of the distribution
+        variance_obs = y_obs.variance.detach().numpy()
+        # Update prediction in order to be less penalized by the loss function
+        #decision = np.zeros_like(y_preds)
+        #for pollution under threshold with low confidence : don't underpredict
+        #mask_1 = 
+        #y_preds[(y_preds > THRESHOLD) & (cdf_half < confidence)] = THRESHOLD - epsilon
+
+        return y_preds, y_means, variance_obs
+
+
+    def fit_model(self, train_x: np.ndarray, train_y: np.ndarray):
+        """
+        Fit your model on the given training data.
+        :param train_x: Training features as a 2d NumPy float array of shape (NUM_SAMPLES, 2)
+        :param train_y: Training pollution concentrations as a 1d NumPy float array of shape (NUM_SAMPLES,)
+        """
+
+        # Construct tensors with the positive training data (and keep a copy of y_train for the loss function test)
+        # copy_train_y = train_y
+        data = np.column_stack((train_x,train_y))
+        new_data = data[(data[:,0]>0) & (data[:,2]>0) & (data[:,2]>0)]
+        train_x = new_data[:,:2]
+        train_y = new_data[:,2]
+        train_x = torch.Tensor(train_x[:12000])
+        train_y = torch.Tensor(train_y[:12000])
+
+        # Initialize the model with our training set and likelihood
+        self.model = ExactGPModel(train_x, train_y, self.likelihood)
+
+        # Train both the likelihood and the model in order to find optimal model hyperparameters
+        self.model.train()
+        self.likelihood.train()
+
+        # Use the Adam optimizer
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.05)
+        # "Loss" for GPs - the marginal log likelihood
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
+
+        for i in range(100):
+            # Zero gradients from previous iteration
+            optimizer.zero_grad()
+            # Output from model
+            output = self.model(train_x)
+            # Compute loss and backpropagation gradients
+            loss = -mll(output, train_y)
+            loss.backward()
+            print('Iter %d/%d - Loss: %.3f  ' % (
+                i + 1, 100, loss.item(),
+            ))
+            optimizer.step()
+
+# Simplest form of Gaussian Model, Inference (cf. Tutorial)
+class ExactGPModel(gpytorch.models.ExactGP):
+
+    def __init__(self, train_x, train_y, likelihood):
+        super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
+        self.mean_module = gpytorch.means.ConstantMean()
+        self.covar_module = get_kernel("Matern-1/2")
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 def cost_function(y_true: np.ndarray, y_predicted: np.ndarray) -> float:
     """
@@ -28,8 +142,6 @@ def cost_function(y_true: np.ndarray, y_predicted: np.ndarray) -> float:
     :param y_predicted: Predicted pollution levels as a 1d NumPy float array
     :return: Total cost of all predictions as a single float
     """
-    print(y_true.shape)
-    print(y_predicted.shape)
     assert y_true.ndim == 1 and y_predicted.ndim == 1 and y_true.shape == y_predicted.shape
 
     # Unweighted cost
@@ -51,140 +163,7 @@ def cost_function(y_true: np.ndarray, y_predicted: np.ndarray) -> float:
     # Weigh the cost and return the average
     return np.mean(cost * weights)
 
-"""
-Fill in the methods of the Model. Please do not change the given methods for the checker script to work.
-You can add new methods, and make changes. The checker script performs:
-    M = Model()
-    M.fit_model(train_x,train_y)
-    prediction = M.predict(test_x)
-It uses predictions to compare to the ground truth using the cost_function above.
-"""
 
-# In order to complete this task we followed the GPyTorch Regression tutorial that can
-# be found here : [https://docs.gpytorch.ai/en/v1.2.0/examples/01_Exact_GPs/Simple_GP_Regression.html]
-# We copyed partially or in integrality some part of these tutorial/
-
-
-class Model():
-
-    def __init__(self):
-        """
-            TODO: enter your code here
-        """
-        # Initialize de likelihood (not the model yet as we need training set to do it)
-        self.likelihood = gpytorch.likelihoods.GaussianLikelihood()
-        self.model = None
-
-    def predict(self, test_x):
-        """
-            TODO: enter your code here
-        """
-
-        # Create a tensor of the test set
-        test_x = torch.Tensor(test_x)
-
-        # Turn the model into evaluation mode
-        self.model.eval()
-        self.likelihood.eval()
-
-        # Get the prediction (in form of MutlvariateNormal)
-        #f_preds = self.model(test_x)
-        y_obs = self.likelihood(self.model(test_x))
-        # For each observation we take the mean of this one as the prediction
-        y_means = y_obs.mean.detach().numpy()
-        y_preds = y_means
-
-        ### Trick to avoid too much penality from the loss function of the assignment ###
-        ### You can find more details on why and how we did this trick on the project description
-
-        # For each observation we also get the variance of the distribution
-        variance_obs = y_obs.variance.detach().numpy()
-        # Then we can define normal continuous random variable with mean(=loc)
-        # and var(=scale) from the predicted distribution
-        #norm_ditribution = norm(y_preds, variance_obs)
-        # evaluated CDF at THRESHOLD for each predicted distributions
-        #cdf_half = norm_ditribution.cdf([THRESHOLD] * nbr)
-        # find the best confidence value using a for loop with value 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9
-        #confidence = 0.7
-        #epsilon = 0.000000001
-
-        # Update prediction in order to be less penalized by the loss function
-        #decision = np.zeros_like(y_preds)
-        #for pollution under threshold with low confidence : don't underpredict
-        #mask_1 = 
-        #y_preds[(y_preds > THRESHOLD) & (cdf_half < confidence)] = THRESHOLD - epsilon
-
-        #############################################################################
-
-        return y_preds, y_means, variance_obs
-
-
-    def fit_model(self, train_x, train_y):
-        """
-             TODO: enter your code here
-        """
-        # Construct tensors with training data (and keep a copy of y_train for the loss function test)
-        # copy_train_y = train_y
-        data = np.column_stack((train_x,train_y))
-        new_data = data[(data[:,0]>0) & (data[:,2]>0) & (data[:,2]>0)]
-        train_x = new_data[:,:2]
-        train_y = new_data[:,2]
-        train_x = torch.Tensor(train_x[:12000])
-        train_y = torch.Tensor(train_y[:12000])
-
-        # Initialize the model with our training set and likelihood
-        self.model = ExactGPModel(train_x, train_y, self.likelihood)
-
-        # Train both the likelihood and the model in order to find optimal model hyperparameters
-        self.model.train()
-        self.likelihood.train()
-
-        # Use the Adam optimizer
-        # We tried the SGD, but results were not good enough compare to the Adam optimizer
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.05)
-        # "Loss" for GPs - the marginal log likelihood
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
-
-        for i in range(100):
-            # Zero gradients from previous iteration
-            optimizer.zero_grad()
-            # Output from model
-            output = self.model(train_x)
-            # Compute loss and backpropagation gradients
-            loss = -mll(output, train_y)
-
-            ######################################
-
-            # Here we should try to use the given loss function to train our model
-            # It would probably allow us to not manually modify the predications at the end
-            #output_np = output.mean.detach().numpy()
-            #loss = cost_function_torch(train_y, output.mean)
-            #print(loss)
-
-            ######################################
-
-            loss.backward()
-            print('Iter %d/%d - Loss: %.3f  ' % (
-                  #' lengthscale: %.3f   noise: %.3f' % (
-                i + 1, 100, loss.item(),
-                #self.model.covar_module.base_kernel.lengthscale.item(),
-                #self.model.likelihood.noise.item()
-            ))
-            optimizer.step()
-
-
-# Simplest form of Gaussian Model, Inference (cf. Tutorial)
-class ExactGPModel(gpytorch.models.ExactGP):
-
-    def __init__(self, train_x, train_y, likelihood):
-        super(ExactGPModel, self).__init__(train_x, train_y, likelihood)
-        self.mean_module = gpytorch.means.ConstantMean()
-        self.covar_module = get_kernel("Matern-1/2")
-
-    def forward(self, x):
-        mean_x = self.mean_module(x)
-        covar_x = self.covar_module(x)
-        return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 def get_kernel(kernel, composition="addition"):
     base_kernel = []
