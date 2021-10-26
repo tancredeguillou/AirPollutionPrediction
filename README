@@ -1,0 +1,25 @@
+The main task of this project is to implement the two methods fit_model and predict.
+
+The first step of this process is choosing the right model for our problem.
+We started looking into the various ways of using gaussian processes with python. The three main possibilities seemed to be sklearn, gpflow and gpytorch libraries.
+We started by looking into the last two ones which seemed computationally more efficient than the first for large data sets. We decided to go with gpytorch and followed the tutorial that can be found on the library documentation.
+
+We create the model with an ExactGP class given by gpytorch. Since the initialisation of such model needs the training data to be tensors, we must initialise the model in the fit_model method. The Model class which was given to us is then initialised with a None model at first, which will then be the ExactGP.
+The model needs a mean, a kernel, a likelihood and a distribution. Following the tutorial we implemented the mean as ConstantMean, the likelihood as GaussianLikelihood and the distribution as MultivariateNormal. All these values can be found in the gpytorch library.
+We tested various kernels to get the best results. We created a utility function get_kernel() for giving any kernel by putting its name as parameter. The method also enabled to easily compute kernel additions. We decided to stick with the Matern1/2 kernel.
+
+The ExactGP module has a train() and an eval() mode. The first is for optimising the parameters and the second is for computing predictions through the model posterior. We have now our model and we will then logically have our model in train mode in fit_model(), and in eval() mode in predict().
+
+fit_model() :
+We started by filtering the training data to delete the noise. This was done by eliminating negative values for pollution concentration.
+Large scale learning is computationally expensive so we had to think of ways to reduce our training data. In our case we discovered that simply taking a smaller part of our data for training did the trick.
+After putting our model in training mode, we created an optimiser instance using adam optimiser. We tested various learning rates between 0.1 and 0.01 and found 0.6 to be the best one.
+The loss function which needs to be maximised for the training process is computed with the marginal log likelihood as seen in the lecture.
+The fitting step is done as following :
+- Zero all parameters gradients
+- Call the model and compute the loss
+- Call backward on the loss to fill in gradients
+- Take a step on the optimiser
+
+predict()
+The predict method is very straightforward. We turn our model and likelihood into evaluation mode. The trained GP model in eval mode returns a MultivariateNormal containing the posterior mean and covariance. Since the posterior mean already gave us satisfactory results we did not implement a decision rule, but we might want to do so for better results.
